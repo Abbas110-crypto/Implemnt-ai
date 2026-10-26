@@ -16,7 +16,9 @@ Deno.serve(async (req) => {
   const clientSecret = Deno.env.get('GOOGLE_OAUTH_CLIENT_SECRET');
   try {
     if (body.action === 'get_auth_url') {
-      if (!clientId) throw new Error('Google OAuth client ID is missing from Supabase Edge Function secrets.');
+      if (!clientId || !clientSecret || !apiKey) {
+        throw new Error('Google OAuth or Recall credentials are missing from Supabase Edge Function secrets.');
+      }
       if (!body.redirect_uri || !body.state) return jsonResponse({ error: 'OAuth redirect and state are required.' }, 400);
       const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
       url.search = new URLSearchParams({
@@ -34,6 +36,11 @@ Deno.serve(async (req) => {
       });
       const tokens = await tokenResponse.json();
       if (!tokenResponse.ok || !tokens.refresh_token) return jsonResponse({ error: tokens.error_description || 'Google did not return a refresh token. Reconnect and approve access.' }, 400);
+      const grantedScopes = new Set(String(tokens.scope || '').split(/\s+/));
+      if (!grantedScopes.has('https://www.googleapis.com/auth/calendar.events.readonly')
+        || !grantedScopes.has('https://www.googleapis.com/auth/userinfo.email')) {
+        return jsonResponse({ error: 'Google Calendar and email permissions are both required. Reconnect and approve both permissions.' }, 400);
+      }
       const profileResponse = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', { headers: { Authorization: `Bearer ${tokens.access_token}` } });
       const profile = await profileResponse.json();
       if (!profileResponse.ok || !profile.email) throw new Error('Could not read the Google account email.');
@@ -41,7 +48,8 @@ Deno.serve(async (req) => {
         .select('id,recall_calendar_id,bot_name,auto_record').eq('tenant_id', user.id)
         .ilike('user_email', profile.email).order('created_date', { ascending: false }).limit(1).maybeSingle();
       if (existingError) throw existingError;
-      const calendarPayload = JSON.stringify({ oauth_client_id: clientId, oauth_client_secret: clientSecret, oauth_refresh_token: tokens.refresh_token, platform: 'google_calendar' });
+      const calendarPayload = JSON.stringify({ oauth_client_id: clientId, oauth_client_secret: clientSecret,
+        oauth_refresh_token: tokens.refresh_token, oauth_email: profile.email, platform: 'google_calendar' });
       const recallHeaders = { Authorization: `Token ${apiKey}`, 'Content-Type': 'application/json' };
       let recallResponse = await fetch(existing
         ? `${recallBase}/calendars/${encodeURIComponent(existing.recall_calendar_id)}/`
@@ -57,7 +65,7 @@ Deno.serve(async (req) => {
       if (!recallResponse.ok) throw new Error(JSON.stringify(calendar));
       const { error } = await admin.from('recall_calendars').upsert({
         tenant_id: user.id, recall_calendar_id: calendar.id, user_email: profile.email,
-        status: calendar.status === 'connected' ? 'connected' : 'connecting',
+        status: ['connected', 'connecting', 'disconnected'].includes(calendar.status) ? calendar.status : 'error',
         bot_name: existing?.bot_name || 'Notetaker', auto_record: existing?.auto_record ?? true,
         sync_error: null,
       }, { onConflict: 'tenant_id,recall_calendar_id' });
@@ -67,7 +75,7 @@ Deno.serve(async (req) => {
           .eq('id', existing.id).eq('tenant_id', user.id);
         if (staleError) throw staleError;
       }
-      return jsonResponse({ success: true, status: calendar.status === 'connected' ? 'connected' : 'connecting' });
+      return jsonResponse({ success: true, status: calendar.status });
     }
     if (body.action === 'disconnect') {
       if (!apiKey) throw new Error('Recall API key is missing from Supabase Edge Function secrets.');

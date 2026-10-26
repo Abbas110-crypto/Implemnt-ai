@@ -71,14 +71,23 @@ try {
   if ($monday.connected -ne $false) { throw 'Unexpected Monday connection in test account' }
   $mondayUrl = Invoke-DevApi 'POST' '/functions/v1/mondayOAuth' $firstHeaders @{ action = 'get_auth_url'; redirect_uri = 'http://localhost:5173/integrations'; code_verifier = ([Guid]::NewGuid().ToString('N') + [Guid]::NewGuid().ToString('N')) }
   if (-not $mondayUrl.auth_url -or -not $mondayUrl.state) { throw 'Monday OAuth could not start' }
+  $mondayAuthorize = [uri]$mondayUrl.auth_url
+  if ($mondayAuthorize.Host -ne 'auth.monday.com' -or $mondayAuthorize.AbsolutePath -ne '/oauth2/authorize' -or -not $mondayAuthorize.Query.Contains('code_challenge_method=S256')) { throw 'Monday OAuth URL is invalid' }
+  $mondayParams = [System.Web.HttpUtility]::ParseQueryString($mondayAuthorize.Query)
+  if ($mondayParams['redirect_uri'] -ne 'http://localhost:5173/integrations') { throw 'Monday OAuth callback URL is incorrect' }
   Write-Output 'monday_oauth_start=PASS'
+  Write-Output "monday_callback=$($mondayParams['redirect_uri'])"
+  Write-Output "monday_version_targeted=$([bool]$mondayParams['app_version_id'])"
 
   $googleUrl = Invoke-DevApi 'POST' '/functions/v1/recallCalendarOAuth' $firstHeaders @{ action = 'get_auth_url'; redirect_uri = 'http://localhost:5173/calendarbots'; state = [Guid]::NewGuid().ToString('N') }
   if (-not $googleUrl.auth_url) { throw 'Google/Recall OAuth could not start' }
+  $googleAuthorize = [uri]$googleUrl.auth_url
+  if ($googleAuthorize.Host -ne 'accounts.google.com' -or $googleAuthorize.AbsolutePath -ne '/o/oauth2/v2/auth' -or -not $googleAuthorize.Query.Contains('access_type=offline')) { throw 'Google OAuth URL is invalid' }
   Write-Output 'google_recall_oauth_start=PASS'
 
-  $hubspot = Invoke-DevApi 'POST' '/functions/v1/hubspotOAuth' $firstHeaders @{ action = 'get_status' }
-  Write-Output ('hubspot_oauth_setup_required=' + [string]$hubspot.setup_required)
+  $sync = Invoke-DevApi 'POST' '/functions/v1/syncRecallCalls' $firstHeaders @{}
+  if ($sync.ok -ne $true -or $sync.calendars -ne 0) { throw 'Recall manual sync endpoint failed for a new account' }
+  Write-Output 'recall_manual_sync=PASS'
 
   Invoke-DevApi 'DELETE' "/rest/v1/clients?id=eq.$clientId" $firstHeaders $null | Out-Null
   $clientId = $null

@@ -4,7 +4,6 @@ const entityTables = {
   ActionItem: 'action_items',
   CallLog: 'call_logs',
   Client: 'clients',
-  CRMIntegration: 'crm_integrations',
   ExecutiveSummaryConfig: 'executive_summary_configs',
   GongCall: 'gong_calls',
   Milestone: 'milestones',
@@ -94,6 +93,12 @@ export const appClient = {
   functions: {
     async invoke(name, body = {}) {
       const { data, error } = await supabase.functions.invoke(name, { body });
+      if (error?.context instanceof Response) {
+        const detail = await error.context.clone().json().catch(() => null);
+        if (detail?.error || detail?.message) {
+          return { data, error: new Error(detail.error || detail.message) };
+        }
+      }
       return { data, error };
     },
   },

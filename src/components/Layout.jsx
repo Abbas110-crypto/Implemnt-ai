@@ -120,8 +120,8 @@ export default function Layout() {
       {/* Mobile nav overlay */}
       {mobileOpen && (
         <div className="lg:hidden fixed inset-0 z-30 bg-black/20" onClick={() => setMobileOpen(false)}>
-          <div className="w-64 bg-white h-full pt-14 shadow-xl" onClick={e => e.stopPropagation()}>
-            <nav className="px-3 py-4 space-y-4">
+          <div className="w-64 bg-white h-full pt-14 shadow-xl flex flex-col" onClick={e => e.stopPropagation()}>
+            <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-4">
               {navSections.map((section, si) => (
                 <div key={si}>
                   {section.label && (
@@ -150,6 +150,15 @@ export default function Layout() {
                 </div>
               ))}
             </nav>
+            <div className="p-3 border-t border-slate-100">
+              <button
+                onClick={() => appClient.auth.logout('/')}
+                className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-slate-500 hover:bg-slate-50 hover:text-slate-700 w-full transition-colors"
+              >
+                <LogOut className="w-4 h-4" />
+                Sign out
+              </button>
+            </div>
           </div>
         </div>
       )}

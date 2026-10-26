@@ -15,6 +15,14 @@ function MondayConnectCard() {
   const [testing, setTesting] = useState(false);
   const [testMessage, setTestMessage] = useState('');
 
+  const showOAuthError = (error, description = '') => {
+    const detail = description || error || 'Unknown OAuth error';
+    const setupHint = /invalid[ _]redirect_uri/i.test(detail)
+      ? ` Add ${redirectUri} exactly in the Monday Developer Center OAuth redirect URLs for the active app version.`
+      : '';
+    setTestMessage(`Monday sign-in failed: ${detail}${/[.!?]$/.test(detail) ? '' : '.'}${setupHint}`);
+  };
+
   const fetchStatus = async () => {
     try {
       const res = await appClient.functions.invoke('mondayOAuth', { action: 'get_status' });
@@ -31,15 +39,15 @@ function MondayConnectCard() {
     const params = new URLSearchParams(window.location.search);
     const code = params.get('code');
     const oauthError = params.get('error');
-    if (oauthError && sessionStorage.getItem('monday_oauth_state')) {
+    if (oauthError) {
       sessionStorage.removeItem('monday_oauth_state');
       sessionStorage.removeItem('monday_oauth_verifier');
       window.history.replaceState({}, '', window.location.pathname);
-      toast.error(`Monday sign-in failed: ${oauthError}`);
+      showOAuthError(oauthError, params.get('error_description') || '');
       fetchStatus().catch(() => {});
       return;
     }
-    if (code && sessionStorage.getItem('monday_oauth_state')) {
+    if (code) {
       const returnedState = params.get('state');
       const expectedState = sessionStorage.getItem('monday_oauth_state');
       const codeVerifier = sessionStorage.getItem('monday_oauth_verifier');
@@ -48,8 +56,9 @@ function MondayConnectCard() {
       window.history.replaceState({}, '', window.location.pathname);
       setWorking(true);
       if (!returnedState || returnedState !== expectedState || !codeVerifier) {
-        toast.error('Monday sign-in could not be verified. Please connect again.');
+        showOAuthError('The returned state could not be verified. Please connect again');
         setWorking(false);
+        fetchStatus().catch(() => {});
         return;
       }
       appClient.functions.invoke('mondayOAuth', {
@@ -57,8 +66,8 @@ function MondayConnectCard() {
       }).then(async result => {
         if (result.error) throw result.error;
         if (result.data?.success) toast.success('Monday.com connected!');
-        else toast.error('Connection failed: ' + (result.data?.error || 'Unknown'));
-      }).catch(error => toast.error('Connection failed: ' + (error.message || 'Unknown')))
+        else showOAuthError(result.data?.error || 'Token exchange failed');
+      }).catch(error => showOAuthError(error.message || 'Token exchange failed'))
         .finally(() => { setWorking(false); fetchStatus().catch(() => setStatus({ connected: false })); });
     } else {
       fetchStatus().catch(() => {});
@@ -67,6 +76,7 @@ function MondayConnectCard() {
 
   const handleConnect = async () => {
     setWorking(true);
+    setTestMessage('');
     try {
       const randomBytes = crypto.getRandomValues(new Uint8Array(32));
       const codeVerifier = btoa(String.fromCharCode(...randomBytes)).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
@@ -78,7 +88,9 @@ function MondayConnectCard() {
       sessionStorage.setItem('monday_oauth_verifier', codeVerifier);
       window.location.assign(result.data.auth_url);
     } catch (error) {
-      toast.error(error.message || 'Could not start Monday sign-in');
+      const message = error.message || 'Could not start Monday sign-in';
+      setTestMessage(message);
+      toast.error(message);
       setWorking(false);
     }
   };
@@ -124,15 +136,15 @@ function MondayConnectCard() {
             <p className="text-xs text-emerald-600 font-medium flex items-center gap-1"><CheckCircle2 className="w-3.5 h-3.5" /> Connected</p>
             {status.account_name && <p className="text-xs text-slate-400">{status.user_name} · {status.account_name}</p>}
             {status.needs_reconnect && <p className="text-xs text-amber-700 mt-1">New permissions are needed. Reconnect Monday.com.</p>}
-            {testMessage && <p role="status" className="text-xs text-slate-600 mt-1">{testMessage}</p>}
           </div>
         ) : (
           <div>
             <p className="text-xs text-slate-400">Not connected</p>
             {status.error && <p role="alert" className="text-xs text-rose-600 mt-1">{status.error}</p>}
-            <p className="text-[10px] text-slate-300 mt-0.5 break-all">Redirect URI: {redirectUri}</p>
           </div>
         )}
+        {testMessage && <p role="status" className="text-xs text-slate-600 mt-1">{testMessage}</p>}
+        <p className="text-[10px] text-slate-400 mt-0.5 break-all">Register this exact URI in the Monday app version: {redirectUri}</p>
       </div>
       {status !== null && (
         status.connected ? (
@@ -157,109 +169,6 @@ function MondayConnectCard() {
   );
 }
 
-function HubSpotConnectCard() {
-  const redirectUri = `${window.location.origin}/integrations`;
-  const [status, setStatus] = useState(null);
-  const [working, setWorking] = useState(false);
-  const [message, setMessage] = useState('');
-
-  const fetchStatus = async () => {
-    const result = await appClient.functions.invoke('hubspotOAuth', { action: 'get_status' });
-    if (result.error || result.data?.error) throw new Error(result.data?.error || result.error?.message || 'HubSpot status unavailable');
-    setStatus(result.data);
-  };
-
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const expectedState = sessionStorage.getItem('hubspot_oauth_state');
-    if (params.get('error') && expectedState) {
-      sessionStorage.removeItem('hubspot_oauth_state');
-      window.history.replaceState({}, '', window.location.pathname);
-      setMessage(`HubSpot sign-in failed: ${params.get('error')}`);
-    } else if (params.get('code') && expectedState) {
-      const code = params.get('code');
-      const state = params.get('state');
-      sessionStorage.removeItem('hubspot_oauth_state');
-      window.history.replaceState({}, '', window.location.pathname);
-      if (state !== expectedState) setMessage('HubSpot sign-in could not be verified. Please connect again.');
-      else {
-        setWorking(true);
-        appClient.functions.invoke('hubspotOAuth', {
-          action: 'exchange_code', code, redirect_uri: redirectUri,
-        }).then((result) => {
-          if (result.error || !result.data?.success) throw new Error(result.data?.error || result.error?.message || 'Connection failed');
-          setMessage(`Connected HubSpot account ${result.data.hub_id}.`);
-        }).catch((error) => setMessage(error.message || 'Connection failed'))
-          .finally(() => { setWorking(false); fetchStatus().catch((error) => setMessage(error.message)); });
-      }
-    }
-    fetchStatus().catch((error) => { setStatus({ connected: false }); setMessage(error.message); });
-  }, []);
-
-  const handleConnect = async () => {
-    setWorking(true);
-    setMessage('');
-    try {
-      const state = crypto.randomUUID();
-      const result = await appClient.functions.invoke('hubspotOAuth', {
-        action: 'get_auth_url', state, redirect_uri: redirectUri,
-      });
-      if (result.error || !result.data?.auth_url) throw new Error(result.data?.error || result.error?.message || 'Could not start HubSpot sign-in');
-      sessionStorage.setItem('hubspot_oauth_state', state);
-      window.location.assign(result.data.auth_url);
-    } catch (error) {
-      setMessage(error.message || 'Could not start HubSpot sign-in');
-      setWorking(false);
-    }
-  };
-
-  const handleTest = async () => {
-    setWorking(true);
-    try {
-      const result = await appClient.functions.invoke('hubspotOAuth', { action: 'test' });
-      if (result.error || !result.data?.success) throw new Error(result.data?.error || result.error?.message || 'Test failed');
-      setMessage('HubSpot connection works.');
-    } catch (error) { setMessage(error.message || 'Test failed'); }
-    finally { setWorking(false); }
-  };
-
-  const handleDisconnect = async () => {
-    setWorking(true);
-    try {
-      const result = await appClient.functions.invoke('hubspotOAuth', { action: 'disconnect' });
-      if (result.error || !result.data?.success) throw new Error(result.data?.error || result.error?.message || 'Disconnect failed');
-      setStatus({ connected: false });
-      setMessage('HubSpot disconnected.');
-    } catch (error) { setMessage(error.message || 'Disconnect failed'); }
-    finally { setWorking(false); }
-  };
-
-  return (
-    <div className="bg-white rounded-xl border border-slate-200 p-5 flex items-center gap-4">
-      <div className="w-10 h-10 rounded-lg bg-orange-50 flex items-center justify-center shrink-0">
-        <span className="text-orange-600 font-bold text-xs">HS</span>
-      </div>
-      <div className="flex-1">
-        <p className="text-sm font-semibold text-slate-800">HubSpot</p>
-        <p className="text-xs text-slate-500">
-          {status === null ? 'Checking connection...' : status.connected
-            ? `Connected${status.hub_id ? ` · Account ${status.hub_id}` : ''}`
-            : status.setup_required ? 'OAuth app setup required' : 'Not connected'}
-        </p>
-        {message && <p role="status" className="text-xs text-slate-600 mt-1">{message}</p>}
-      </div>
-      {status && (status.connected ? (
-        <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={handleTest} disabled={working}>Test</Button>
-          {status.mode === 'oauth' && <Button variant="outline" size="sm" onClick={handleDisconnect} disabled={working}>Disconnect</Button>}
-        </div>
-      ) : (
-        <Button size="sm" onClick={handleConnect} disabled={working || status.setup_required}>Connect</Button>
-      ))}
-    </div>
-  );
-}
-
 export default function Integrations() {
   return (
     <div className="p-6 lg:p-8 max-w-3xl mx-auto space-y-6">
@@ -272,7 +181,6 @@ export default function Integrations() {
       <div className="space-y-2">
         <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Connected Apps</p>
         <MondayConnectCard />
-        <HubSpotConnectCard />
       </div>
 
       {/* Coming soon */}

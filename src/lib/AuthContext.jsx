@@ -9,21 +9,32 @@ export function AuthProvider({ children }) {
 
   useEffect(() => {
     let mounted = true;
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (!mounted) return;
+      // A restored session can be stale (for example, after account deletion).
+      // Let getUser validate it before treating the visitor as signed in.
+      if (event === 'INITIAL_SESSION') return;
       setUser(session?.user ?? null);
       setIsLoadingAuth(false);
     });
 
     supabase.auth.getSession()
-      .then(({ data: { session }, error }) => {
+      .then(async ({ data: { session }, error }) => {
         if (!mounted) return;
-        if (error) console.error('Could not restore the Supabase session:', error.message);
-        setUser(session?.user ?? null);
+        if (error) throw error;
+        if (!session) {
+          setUser(null);
+          return;
+        }
+
+        const { data: { user: currentUser }, error: userError } = await supabase.auth.getUser();
+        if (!mounted) return;
+        if (userError) throw userError;
+        setUser(currentUser ?? null);
       })
       .catch((error) => {
         if (!mounted) return;
-        console.error('Could not reach Supabase Auth:', error);
+        console.error('Could not validate the Supabase session:', error);
         setUser(null);
       })
       .finally(() => { if (mounted) setIsLoadingAuth(false); });

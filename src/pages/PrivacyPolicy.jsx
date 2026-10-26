@@ -53,7 +53,7 @@ export default function PrivacyPolicy() {
               <p>We do not sell your personal data. We share data only with:</p>
               <ul className="list-disc pl-5 space-y-1">
                 <li>Service providers who help us operate the platform (e.g., Recall AI for meeting bots).</li>
-                <li>Third-party integrations you explicitly authorize (e.g., Monday.com, HubSpot).</li>
+                <li>Third-party integrations you explicitly authorize (e.g., Monday.com and Google Calendar).</li>
                 <li>Legal authorities if required by law.</li>
               </ul>
             </section>

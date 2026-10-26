@@ -45,7 +45,7 @@ Deno.serve(async (req) => {
       const scopes = credential?.secret_value ? String(JSON.parse(credential.secret_value).scope || '').split(/[\s,]+/) : [];
       const requiredScopes = ['boards:read', 'boards:write', 'me:read', 'users:read', 'updates:write', 'account:read'];
       return jsonResponse({ connected: Boolean(connection && credential),
-        needs_reconnect: Boolean(connection && credential && scopes.length && requiredScopes.some((scope) => !scopes.includes(scope))),
+        needs_reconnect: Boolean(connection && credential && requiredScopes.some((scope) => !scopes.includes(scope))),
         ...(connection && credential ? connection : {}) });
     }
 
@@ -66,6 +66,8 @@ Deno.serve(async (req) => {
       url.searchParams.set('code_challenge', challenge);
       url.searchParams.set('code_challenge_method', 'S256');
       url.searchParams.set('scope', 'boards:read boards:write me:read users:read updates:write account:read');
+      const appVersionId = Deno.env.get('MONDAY_APP_VERSION_ID');
+      if (appVersionId) url.searchParams.set('app_version_id', appVersionId);
       return jsonResponse({ auth_url: url.toString(), state });
     }
 

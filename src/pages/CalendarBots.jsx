@@ -11,7 +11,7 @@ import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { useAuth } from '@/lib/AuthContext';
 
-function ConnectDialog({ open, onOpenChange, onConnected }) {
+function ConnectDialog({ open, onOpenChange }) {
   const [loading, setLoading] = useState(false);
 
   const handleConnect = async () => {
@@ -53,6 +53,12 @@ function ConnectDialog({ open, onOpenChange, onConnected }) {
             <p>• Automatically sends a bot to upcoming meetings</p>
             <p>• Bot records and transcribes the call</p>
           </div>
+          <p className="text-xs text-slate-500">
+            During Google OAuth testing, the Google account you choose must be listed under Google Auth Platform → Audience → Test users.
+          </p>
+          <p className="text-xs text-slate-500 break-all">
+            Google OAuth redirect URI for this site: {`${window.location.origin}/calendarbots`}
+          </p>
           <div className="flex justify-end gap-3">
             <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
             <Button onClick={handleConnect} disabled={loading} className="bg-indigo-600 hover:bg-indigo-700 text-white gap-2">
@@ -139,14 +145,15 @@ export default function CalendarBots() {
       const res = await appClient.functions.invoke('syncRecallCalls', {});
       if (res.error) throw res.error;
       if (res.data?.ok) {
-        const { scheduled, updated } = res.data;
+        const { scheduled, updated, connecting } = res.data;
         const parts = [];
         if (scheduled) parts.push(`${scheduled} bot${scheduled !== 1 ? 's' : ''} scheduled`);
         if (updated) parts.push(`${updated} transcript${updated !== 1 ? 's' : ''} backfilled`);
-        toast.success(parts.length ? `Synced ${parts.join(', ')}` : 'No new calls to sync');
+        toast.success(parts.length ? `Synced ${parts.join(', ')}`
+          : connecting ? 'Calendar authorization is still syncing. Try again shortly.' : 'No new calls to sync');
         queryClient.invalidateQueries({ queryKey: ['recall-calendar-events'] });
         queryClient.invalidateQueries({ queryKey: ['recall-calendars'] });
-      } else throw new Error(res.data?.error || 'Sync failed');
+      } else throw new Error(res.data?.error || res.data?.failures?.join('; ') || 'Sync failed');
     } catch (error) {
       toast.error(error.message || 'Recall sync failed. Check the Supabase function configuration.');
     } finally {
@@ -186,7 +193,8 @@ export default function CalendarBots() {
     }
 
     if (error) {
-      toast.error('Connection failed: ' + error);
+      const description = params.get('error_description') || error;
+      toast.error('Google Calendar connection failed: ' + description);
       window.history.replaceState({}, '', window.location.pathname);
     }
   }, []);
@@ -197,6 +205,7 @@ export default function CalendarBots() {
       ? appClient.entities.RecallCalendar.filter({ tenant_id: currentUser.id }, '-created_date')
       : [],
     enabled: !!currentUser,
+    refetchInterval: query => query.state.data?.some(calendar => calendar.status === 'connecting') ? 10000 : false,
   });
 
   const { data: botEvents = [] } = useQuery({
@@ -337,7 +346,7 @@ export default function CalendarBots() {
         </div>
       )}
 
-      <ConnectDialog open={showConnect} onOpenChange={setShowConnect} onConnected={() => queryClient.invalidateQueries({ queryKey: ['recall-calendars'] })} />
+      <ConnectDialog open={showConnect} onOpenChange={setShowConnect} />
       {settingsCal && (
         <SettingsDialog
           calendar={settingsCal}

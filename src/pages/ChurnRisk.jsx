@@ -2,12 +2,10 @@ import React, { useState } from 'react';
 import { useTenant } from '@/lib/useTenant';
 import { appClient } from '@/api/appClient';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, RefreshCw, Settings, Loader2, ExternalLink, Check } from 'lucide-react';
+import { AlertTriangle, RefreshCw, Settings, Loader2, Check } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Link } from 'react-router-dom';
-import { format } from 'date-fns';
 import ChurnRiskRow from '../components/churn/ChurnRiskRow';
-import HubspotIdDialog from '../components/churn/HubspotIdDialog';
 
 const levelColors = {
   low: 'bg-emerald-50 text-emerald-700 border-emerald-200',
@@ -21,7 +19,6 @@ export default function ChurnRisk() {
   const queryClient = useQueryClient();
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState(null);
-  const [editingClient, setEditingClient] = useState(null);
 
   const { data: clients = [], isLoading } = useQuery({
     queryKey: ['clients-churn', tenant_id],
@@ -32,15 +29,10 @@ export default function ChurnRisk() {
   const handleSyncAll = async () => {
     setSyncing(true);
     setSyncResult(null);
-    const res = await appClient.functions.invoke('syncChurnRiskToHubspot', {});
-    setSyncResult(res.data);
+    const res = await appClient.functions.invoke('calculateChurnRisk', {});
+    setSyncResult(res.data?.success ? res.data : { error: res.data?.error || res.error?.message || 'Risk calculation failed' });
     queryClient.invalidateQueries({ queryKey: ['clients-churn'] });
     setSyncing(false);
-  };
-
-  const handleSyncOne = async (clientId) => {
-    await appClient.functions.invoke('syncChurnRiskToHubspot', { client_id: clientId });
-    queryClient.invalidateQueries({ queryKey: ['clients-churn'] });
   };
 
   const counts = {
@@ -60,7 +52,7 @@ export default function ChurnRisk() {
             Risk Monitor
           </h1>
           <p className="text-sm text-slate-500 mt-1">
-            Keyword-based risk scores synced to your integrations
+            Keyword-based risk scores from project call notes and transcripts
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -76,7 +68,7 @@ export default function ChurnRisk() {
             className="bg-indigo-600 hover:bg-indigo-700 text-white gap-2"
           >
             {syncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-            Sync All to CRM
+            Recalculate Risk
           </Button>
         </div>
       </div>
@@ -85,10 +77,10 @@ export default function ChurnRisk() {
       {syncResult?.success && (
         <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-5 py-3 flex items-center gap-2 text-sm text-emerald-700">
           <Check className="w-4 h-4 shrink-0" />
-          Synced {syncResult.results?.length} projects.{' '}
-          {syncResult.results?.filter(r => r.hubspot_synced).length} pushed to CRM.
+          Recalculated risk for {syncResult.results?.length} projects.
         </div>
       )}
+      {syncResult?.error && <p role="alert" className="text-sm text-rose-700">{syncResult.error}</p>}
 
       {/* Summary cards */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
@@ -105,15 +97,6 @@ export default function ChurnRisk() {
         ))}
       </div>
 
-      {/* HubSpot setup tip */}
-      <div className="bg-blue-50 border border-blue-200 rounded-xl px-5 py-3 text-sm text-blue-700 flex items-start gap-2">
-        <ExternalLink className="w-4 h-4 shrink-0 mt-0.5" />
-        <span>
-          To sync with HubSpot or Salesforce, configure each project's CRM IDs using the settings icon on their row. 
-          Make sure your HubSpot contacts/deals have custom properties: <code className="bg-blue-100 px-1 rounded">churn_risk_score</code>, <code className="bg-blue-100 px-1 rounded">churn_risk_level</code>, <code className="bg-blue-100 px-1 rounded">churn_risk_keywords</code>.
-        </span>
-      </div>
-
       {/* Client list */}
       {isLoading ? (
         <div className="flex justify-center py-12">
@@ -128,25 +111,12 @@ export default function ChurnRisk() {
               <ChurnRiskRow
                 key={client.id}
                 client={client}
-                onSync={() => handleSyncOne(client.id)}
-                onEditHubspot={() => setEditingClient(client)}
               />
             ))
           )}
         </div>
       )}
 
-      {editingClient && (
-        <HubspotIdDialog
-          client={editingClient}
-          open={!!editingClient}
-          onOpenChange={open => !open && setEditingClient(null)}
-          onSaved={() => {
-            queryClient.invalidateQueries({ queryKey: ['clients-churn'] });
-            setEditingClient(null);
-          }}
-        />
-      )}
     </div>
   );
 }
