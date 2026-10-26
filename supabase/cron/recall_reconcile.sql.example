@@ -1,0 +1,24 @@
+-- Run only in the separate development Supabase project after replacing all placeholders.
+-- Use the same random RECALL_RECONCILE_SECRET value in Edge Function secrets and Vault.
+create extension if not exists pg_cron;
+create extension if not exists pg_net;
+
+select vault.create_secret('https://YOUR_DEV_PROJECT_REF.supabase.co', 'implemnt_dev_url');
+select vault.create_secret('YOUR_DEV_PUBLISHABLE_KEY', 'implemnt_dev_publishable_key');
+select vault.create_secret('YOUR_RANDOM_RECONCILE_SECRET', 'implemnt_reconcile_secret');
+
+select cron.schedule(
+  'implemnt-recall-reconcile',
+  '* * * * *',
+  $$
+    select net.http_post(
+      url := (select decrypted_secret from vault.decrypted_secrets where name = 'implemnt_dev_url') || '/functions/v1/reconcileRecall',
+      headers := jsonb_build_object(
+        'Content-Type', 'application/json',
+        'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'implemnt_dev_publishable_key'),
+        'x-reconcile-secret', (select decrypted_secret from vault.decrypted_secrets where name = 'implemnt_reconcile_secret')
+      ),
+      body := '{}'::jsonb
+    ) as request_id;
+  $$
+);

@@ -1,0 +1,20 @@
+project_id = "implemnt-local"
+
+[auth]
+site_url = "http://localhost:5173"
+additional_redirect_urls = ["http://localhost:5173/**"]
+
+[functions.getClientPortalData]
+verify_jwt = false
+
+[functions.getMilestoneComments]
+verify_jwt = false
+
+[functions.addMilestoneComment]
+verify_jwt = false
+
+[functions.recallWebhook]
+verify_jwt = false
+
+[functions.reconcileRecall]
+verify_jwt = false
