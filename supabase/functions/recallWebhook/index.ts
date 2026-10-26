@@ -53,20 +53,37 @@ Deno.serve(async (req) => {
         if (updateError) throw updateError;
       }
     } else if (eventType === 'calendar.update' && data.calendar_id) {
-      const state = await recallRequest(`/calendars/${encodeURIComponent(data.calendar_id)}/`);
+      let nextStatus = 'disconnected';
+      try {
+        const state = await recallRequest(`/calendars/${encodeURIComponent(data.calendar_id)}/`);
+        nextStatus = ['connected', 'connecting', 'disconnected'].includes(state.status) ? state.status : 'error';
+      } catch (error) {
+        if (!(error instanceof Error) || !error.message.startsWith('Recall API 404:')) throw error;
+      }
       const { error } = await admin.from('recall_calendars')
-        .update({ status: ['connected', 'connecting', 'disconnected'].includes(state.status) ? state.status : 'error' })
+        .update({ status: nextStatus })
         .eq('recall_calendar_id', String(data.calendar_id));
       if (error) throw error;
     } else if (eventType === 'transcript.done' && data.bot?.id && data.transcript?.id) {
-      await syncBotTranscript(admin, String(data.bot.id), String(data.transcript.id), data.recording?.id && String(data.recording.id));
+      const recovered = await syncBotTranscript(admin, String(data.bot.id), String(data.transcript.id), data.recording?.id && String(data.recording.id));
+      if (!recovered) {
+        const { error } = await admin.from('recall_calendar_events')
+          .update({ transcript_synced_at: null }).eq('recall_bot_id', String(data.bot.id));
+        if (error) throw error;
+      }
     } else if (eventType === 'transcript.failed' && data.bot?.id) {
       await saveBotStatus(admin, String(data.bot.id), 'transcript_failed',
         String(data.data?.sub_code || 'Transcript processing failed'), data.recording?.id && String(data.recording.id));
+      const { error } = await admin.from('recall_calendar_events')
+        .update({ transcript_synced_at: null }).eq('recall_bot_id', String(data.bot.id));
+      if (error) throw error;
     } else if ((eventType === 'recording.done' || eventType === 'recording.failed') && data.bot?.id) {
       await saveBotStatus(admin, String(data.bot.id), eventType.replace('.', '_'),
         eventType.endsWith('failed') ? String(data.data?.sub_code || 'Recording failed') : null,
         data.recording?.id && String(data.recording.id));
+      const { error } = await admin.from('recall_calendar_events')
+        .update({ transcript_synced_at: null }).eq('recall_bot_id', String(data.bot.id));
+      if (error) throw error;
     } else if (eventType.startsWith('bot.') && data.bot?.id) {
       const botId = String(data.bot.id);
       const status = eventType.slice(4);

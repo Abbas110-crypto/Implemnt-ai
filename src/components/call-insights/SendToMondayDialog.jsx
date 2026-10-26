@@ -31,16 +31,17 @@ export default function SendToMondayDialog({ open, onOpenChange, call, onSent })
     if (!open) return;
     setLoading(true);
     setError('');
+    setOptions(null);
+    setBoardId('');
     appClient.functions.invoke('sendCallToMonday', { action: 'get_options' })
       .then(res => {
-        if (res.data?.boards) {
-          setOptions(res.data);
-          if (res.data.boards.length) setBoardId(res.data.boards[0].id);
-        } else {
-          setError(res.data?.error || 'Failed to load Monday boards');
-        }
+        if (res.error || res.data?.error) throw new Error(res.data?.error || res.error?.message || 'Failed to load Monday boards');
+        if (!res.data?.boards) throw new Error('Failed to load Monday boards');
+        setOptions(res.data);
+        if (res.data.boards.length) setBoardId(String(res.data.boards[0].id));
+        else setError('No Monday boards are available for this account.');
       })
-      .catch(e => setError(e.response?.data?.error || e.message || 'Failed to load Monday options'))
+      .catch(e => setError(e.message || 'Failed to load Monday options'))
       .finally(() => setLoading(false));
   }, [open]);
 
@@ -134,6 +135,7 @@ export default function SendToMondayDialog({ open, onOpenChange, call, onSent })
         assignee: peopleCol && assigneeId ? { col_id: peopleCol.id, user_id: assigneeId } : undefined,
       };
       const res = await appClient.functions.invoke('sendCallToMonday', payload);
+      if (res.error || res.data?.error) throw new Error(res.data?.error || res.error?.message || 'Failed to send');
       if (res.data?.ok) {
         toast.success('Sent to Monday.com!');
         onSent?.();

@@ -37,11 +37,15 @@ Deno.serve(async (req) => {
     }
     if (!transcript.trim()) return jsonResponse({ error: 'No transcript available to analyze' }, 400);
 
-    const [{ data: riskKeywords }, { data: milestones }] = await Promise.all([
+    const [riskResult, milestoneResult] = await Promise.all([
       auth.userClient.from('risk_keywords').select('keyword,severity,active').eq('tenant_id', auth.user.id),
-      auth.userClient.from('milestones').select('id,title,status').eq('client_id', callLog.client_id),
+      callLog.client_id
+        ? auth.userClient.from('milestones').select('id,title,status').eq('client_id', callLog.client_id)
+        : Promise.resolve({ data: [], error: null }),
     ]);
-    const analysis = analyzeTranscript(transcript, riskKeywords || [], milestones || []);
+    if (riskResult.error) throw riskResult.error;
+    if (milestoneResult.error) throw milestoneResult.error;
+    const analysis = analyzeTranscript(transcript, riskResult.data || [], milestoneResult.data || []);
     const { error: updateError } = await auth.userClient.from('call_logs').update({
       notes: callLog.notes || transcript.slice(0, 15000),
       summary: analysis.summary,
@@ -61,25 +65,48 @@ Deno.serve(async (req) => {
     const milestoneError = milestoneResults.find((result) => result.error)?.error;
     if (milestoneError) throw milestoneError;
 
-    if (analysis.risk_flags.length) {
-      const actionRows = analysis.risk_flags.map((flag) => ({
-        tenant_id: auth.user.id,
-        client_id: callLog.client_id,
-        call_id: call_log_id,
-        call_type: 'call_log',
-        title: `Review risk: ${flag.keyword}`,
-        description: flag.context,
-        triggered_by_keywords: [flag.keyword],
-        severity: flag.severity,
-        risk_category: 'other',
-        status: 'pending_review',
-        context_snippet: flag.context,
-      }));
-      const { error } = await auth.userClient.from('action_items').insert(actionRows);
-      if (error) console.error('Could not create risk review items:', error.message);
+    let actionItemWarning: string | null = null;
+    if (analysis.risk_flags.length && !callLog.client_id) {
+      actionItemWarning = 'Analysis completed, but this call needs a project before risk action items can be created.';
+    } else if (analysis.risk_flags.length) {
+      const { data: existingItems, error: existingError } = await auth.userClient.from('action_items')
+        .select('triggered_by_keywords').eq('call_id', call_log_id).eq('call_type', 'call_log');
+      if (existingError) {
+        console.error('Could not check existing risk review items:', existingError.message);
+        actionItemWarning = 'Analysis completed, but risk action items could not be checked for duplicates.';
+      } else {
+        const seenKeywords = new Set((existingItems || []).flatMap((item) => item.triggered_by_keywords || [])
+          .map((keyword) => String(keyword).toLowerCase()));
+        const newFlags = analysis.risk_flags.filter((flag) => {
+          const key = flag.keyword.toLowerCase();
+          if (seenKeywords.has(key)) return false;
+          seenKeywords.add(key);
+          return true;
+        });
+        if (newFlags.length) {
+          const actionRows = newFlags.map((flag) => ({
+            tenant_id: auth.user.id,
+            client_id: callLog.client_id,
+            call_id: call_log_id,
+            call_type: 'call_log',
+            title: `Review risk: ${flag.keyword}`,
+            description: flag.context,
+            triggered_by_keywords: [flag.keyword],
+            severity: flag.severity,
+            risk_category: 'other',
+            status: 'pending_review',
+            context_snippet: flag.context,
+          }));
+          const { error } = await auth.userClient.from('action_items').insert(actionRows);
+          if (error) {
+            console.error('Could not create risk review items:', error.message);
+            actionItemWarning = 'Analysis completed, but risk action items could not be created.';
+          }
+        }
+      }
     }
 
-    return jsonResponse({ ok: true, analysis });
+    return jsonResponse({ ok: true, analysis, action_item_warning: actionItemWarning });
   } catch (error) {
     console.error('Call analysis failed:', error);
     return jsonResponse({ error: 'Could not analyze this call' }, 500);

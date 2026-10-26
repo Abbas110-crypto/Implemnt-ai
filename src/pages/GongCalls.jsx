@@ -3,7 +3,7 @@ import { appClient } from '@/api/appClient';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Phone, CheckCircle2, Clock, XCircle, Loader2, ExternalLink } from 'lucide-react';
+import { Phone, CheckCircle2, Clock, XCircle, Loader2 } from 'lucide-react';
 import { format } from 'date-fns';
 import GongCallReviewDialog from '../components/gong/GongCallReviewDialog';
 import { toast } from 'sonner';

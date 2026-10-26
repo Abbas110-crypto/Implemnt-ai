@@ -27,6 +27,8 @@ function Invoke-DevApi {
 
 $createdUserIds = [Collections.Generic.List[string]]::new()
 $clientId = $null
+$callId = $null
+$keywordId = $null
 $firstSession = $null
 try {
   $suffix = [Guid]::NewGuid().ToString('N')
@@ -89,11 +91,48 @@ try {
   if ($sync.ok -ne $true -or $sync.calendars -ne 0) { throw 'Recall manual sync endpoint failed for a new account' }
   Write-Output 'recall_manual_sync=PASS'
 
+  $keyword = @(Invoke-DevApi 'POST' '/rest/v1/risk_keywords' $createHeaders @{ keyword = 'setback'; category = 'timeline'; severity = 'high'; active = $true })[0]
+  $keywordId = [string]$keyword.id
+  $call = @(Invoke-DevApi 'POST' '/rest/v1/call_logs' $createHeaders @{
+    client_id = $clientId; title = 'Temporary analysis verification'; notes = 'This is a setback to the project timeline.'
+  })[0]
+  $callId = [string]$call.id
+  if (-not $keywordId -or -not $callId) { throw 'Analysis test data could not be created' }
+  $firstAnalysis = Invoke-DevApi 'POST' '/functions/v1/analyzeCallTranscript' $firstHeaders @{ call_log_id = $callId }
+  $secondAnalysis = Invoke-DevApi 'POST' '/functions/v1/analyzeCallTranscript' $firstHeaders @{ call_log_id = $callId }
+  if ($firstAnalysis.ok -ne $true -or $secondAnalysis.ok -ne $true) { throw 'Call analysis failed' }
+  $reviewItems = @(Invoke-DevApi 'GET' "/rest/v1/action_items?call_id=eq.$callId&select=id" $firstHeaders $null)
+  if ($reviewItems.Count -ne 1) { throw "Re-analysis created $($reviewItems.Count) risk review items; expected one" }
+  Write-Output 'reanalysis_no_duplicate_action_items=PASS'
+  $hiddenCalls = Invoke-DevApi 'GET' "/rest/v1/call_logs?id=eq.$callId&select=id" $secondHeaders $null
+  $hiddenReviews = Invoke-DevApi 'GET' "/rest/v1/action_items?call_id=eq.$callId&select=id" $secondHeaders $null
+  if (($null -ne $hiddenCalls -and @($hiddenCalls).Count -gt 0) -or
+      ($null -ne $hiddenReviews -and @($hiddenReviews).Count -gt 0)) { throw 'User isolation failed for calls or action items' }
+  Write-Output 'per_user_call_action_isolation=PASS'
+
+  Invoke-DevApi 'DELETE' "/rest/v1/action_items?call_id=eq.$callId" $firstHeaders $null | Out-Null
+  Invoke-DevApi 'DELETE' "/rest/v1/call_logs?id=eq.$callId" $firstHeaders $null | Out-Null
+  $callId = $null
+  Invoke-DevApi 'DELETE' "/rest/v1/risk_keywords?id=eq.$keywordId" $firstHeaders $null | Out-Null
+  $keywordId = $null
   Invoke-DevApi 'DELETE' "/rest/v1/clients?id=eq.$clientId" $firstHeaders $null | Out-Null
   $clientId = $null
   Write-Output 'temporary_client_cleanup=PASS'
 }
 finally {
+  if ($callId -and $firstSession.access_token) {
+    try {
+      $firstHeaders = @{ apikey = $publishableKey; Authorization = "Bearer $($firstSession.access_token)" }
+      Invoke-DevApi 'DELETE' "/rest/v1/action_items?call_id=eq.$callId" $firstHeaders $null | Out-Null
+      Invoke-DevApi 'DELETE' "/rest/v1/call_logs?id=eq.$callId" $firstHeaders $null | Out-Null
+    } catch { Write-Output 'temporary_call_cleanup=FAILED' }
+  }
+  if ($keywordId -and $firstSession.access_token) {
+    try {
+      $firstHeaders = @{ apikey = $publishableKey; Authorization = "Bearer $($firstSession.access_token)" }
+      Invoke-DevApi 'DELETE' "/rest/v1/risk_keywords?id=eq.$keywordId" $firstHeaders $null | Out-Null
+    } catch { Write-Output 'temporary_keyword_cleanup=FAILED' }
+  }
   if ($clientId -and $firstSession.access_token) {
     try {
       $firstHeaders = @{ apikey = $publishableKey; Authorization = "Bearer $($firstSession.access_token)" }

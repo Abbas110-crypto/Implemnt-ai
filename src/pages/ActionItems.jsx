@@ -6,6 +6,7 @@ import { CheckCircle2, XCircle, Send, Loader2, AlertTriangle, Bot, RefreshCw, Ch
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 
 const SEVERITY_COLORS = {
   high: 'bg-red-100 text-red-700 border-red-200',
@@ -77,7 +78,7 @@ function ActionItemCard({ item, clients, onApprove, onReject, onSendToMonday, lo
             </>
           )}
           {item.status === 'approved' && (
-            <Button size="sm" onClick={() => onSendToMonday(item.id)} disabled={loading === item.id}
+            <Button size="sm" onClick={() => onSendToMonday(item)} disabled={loading === item.id}
               className="bg-red-600 hover:bg-red-700 text-white gap-1.5 text-xs h-7">
               {loading === item.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
               Send to Monday
@@ -116,6 +117,11 @@ export default function ActionItems() {
   const [agentRunning, setAgentRunning] = useState(false);
   const [testingMonday, setTestingMonday] = useState(false);
   const [mondayTestResult, setMondayTestResult] = useState(null); // null | {ok, message}
+  const [sendItem, setSendItem] = useState(null);
+  const [boardOptions, setBoardOptions] = useState([]);
+  const [boardsLoading, setBoardsLoading] = useState(false);
+  const [selectedBoardId, setSelectedBoardId] = useState('');
+  const [sendError, setSendError] = useState('');
 
   const { data: actionItems = [], isLoading } = useQuery({
     queryKey: ['action-items', filter],
@@ -139,47 +145,89 @@ export default function ActionItems() {
 
   const handleApprove = async (id) => {
     setLoading(id);
-    await appClient.entities.ActionItem.update(id, { status: 'approved' });
-    queryClient.invalidateQueries({ queryKey: ['action-items'] });
-    toast.success('Action item approved');
-    setLoading(null);
+    try {
+      await appClient.entities.ActionItem.update(id, { status: 'approved' });
+      queryClient.invalidateQueries({ queryKey: ['action-items'] });
+      toast.success('Action item approved');
+    } catch (error) {
+      toast.error(error.message || 'Could not approve action item');
+    } finally {
+      setLoading(null);
+    }
   };
 
   const handleReject = async (id) => {
     setLoading(id);
-    await appClient.entities.ActionItem.update(id, { status: 'rejected' });
-    queryClient.invalidateQueries({ queryKey: ['action-items'] });
-    toast.success('Action item rejected');
-    setLoading(null);
+    try {
+      await appClient.entities.ActionItem.update(id, { status: 'rejected' });
+      queryClient.invalidateQueries({ queryKey: ['action-items'] });
+      toast.success('Action item rejected');
+    } catch (error) {
+      toast.error(error.message || 'Could not reject action item');
+    } finally {
+      setLoading(null);
+    }
   };
 
-  const handleSendToMonday = async (id) => {
-    setLoading(id);
-    const res = await appClient.functions.invoke('sendToMonday', { action_item_id: id });
-    if (res.data?.success) {
+  const handlePrepareSend = async (item) => {
+    setSendItem(item);
+    setBoardOptions([]);
+    setSelectedBoardId('');
+    setSendError('');
+    setBoardsLoading(true);
+    try {
+      const res = await appClient.functions.invoke('sendToMonday', { action: 'get_boards' });
+      if (res.error || res.data?.error) throw new Error(res.data?.error || res.error?.message || 'Could not load Monday boards');
+      const boards = res.data?.boards || [];
+      setBoardOptions(boards);
+      if (item.monday_board_id && boards.some((board) => String(board.id) === String(item.monday_board_id))) {
+        setSelectedBoardId(String(item.monday_board_id));
+      }
+      if (!boards.length) setSendError('No Monday boards are available for this account.');
+    } catch (error) {
+      setSendError(error.message || 'Could not load Monday boards');
+    } finally {
+      setBoardsLoading(false);
+    }
+  };
+
+  const handleSendToMonday = async () => {
+    if (!sendItem || !selectedBoardId) return;
+    setLoading(sendItem.id);
+    setSendError('');
+    try {
+      const res = await appClient.functions.invoke('sendToMonday', {
+        action_item_id: sendItem.id,
+        board_id: selectedBoardId,
+      });
+      if (res.error || !res.data?.success) throw new Error(res.data?.error || res.error?.message || 'Failed to send to Monday');
       if (res.data.status_warning) toast.warning(res.data.status_warning);
       else toast.success(res.data.status_updated ? 'Sent to Monday.com and updated its status.' : 'Sent to Monday.com.');
       queryClient.invalidateQueries({ queryKey: ['action-items'] });
-    } else {
-      toast.error(res.data?.error || 'Failed to send to Monday');
+      setSendItem(null);
+    } catch (error) {
+      setSendError(error.message || 'Failed to send to Monday');
+    } finally {
+      setLoading(null);
     }
-    setLoading(null);
   };
 
   const handleTestMonday = async () => {
     setTestingMonday(true);
     setMondayTestResult(null);
-    const res = await appClient.functions.invoke('testIntegration', { platform: 'monday' });
-    if (res.data?.success) {
+    try {
+      const res = await appClient.functions.invoke('testIntegration', { platform: 'monday' });
+      if (res.error || !res.data?.success) throw new Error(res.data?.error || res.error?.message || 'Connection failed');
       const parts = [];
       if (res.data.user_name) parts.push(`Connected as ${res.data.user_name}`);
       if (res.data.account_name) parts.push(res.data.account_name);
       const prefix = parts.length ? parts.join(' · ') + '. ' : 'Monday.com connected. ';
       setMondayTestResult({ ok: true, message: `${prefix}Found ${res.data.board_count ?? '?'} board(s).` });
-    } else {
-      setMondayTestResult({ ok: false, message: res.data?.error || 'Connection failed' });
+    } catch (error) {
+      setMondayTestResult({ ok: false, message: error.message || 'Connection failed' });
+    } finally {
+      setTestingMonday(false);
     }
-    setTestingMonday(false);
   };
 
   const handleRunAgent = async () => {
@@ -189,7 +237,8 @@ export default function ActionItems() {
       const result = await appClient.functions.invoke('analyzeCallTranscript', { call_log_id: selectedCallId });
       if (result.error) throw result.error;
       if (result.data?.error) throw new Error(result.data.error);
-      toast.success(`Local rules found ${result.data?.analysis?.risk_flags?.length || 0} risk matches.`);
+      if (result.data?.action_item_warning) toast.warning(result.data.action_item_warning);
+      else toast.success(`Local rules found ${result.data?.analysis?.risk_flags?.length || 0} risk matches.`);
       setAgentOpen(false);
       setSelectedCallId('');
       queryClient.invalidateQueries({ queryKey: ['action-items'] });
@@ -197,10 +246,6 @@ export default function ActionItems() {
       toast.error('Call analysis failed: ' + e.message);
     }
     setAgentRunning(false);
-  };
-
-  const counts = {
-    pending_review: actionItems.filter ? undefined : 0,
   };
 
   const FILTERS = [
@@ -292,12 +337,38 @@ export default function ActionItems() {
               clients={clients}
               onApprove={handleApprove}
               onReject={handleReject}
-              onSendToMonday={handleSendToMonday}
+              onSendToMonday={handlePrepareSend}
               loading={loading}
             />
           ))}
         </div>
       )}
+      <Dialog open={!!sendItem} onOpenChange={(open) => { if (!open && loading !== sendItem?.id) setSendItem(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Send action item to Monday.com</DialogTitle>
+            <DialogDescription>Choose the destination board for “{sendItem?.title}”. Nothing is sent until you confirm.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <label htmlFor="action-monday-board" className="text-sm font-medium text-slate-700">Monday board</label>
+            <select id="action-monday-board" value={selectedBoardId} onChange={(event) => setSelectedBoardId(event.target.value)}
+              disabled={boardsLoading || !!sendError && !boardOptions.length}
+              className="w-full h-10 rounded-md border border-slate-300 bg-white px-3 text-sm">
+              <option value="">{boardsLoading ? 'Loading boards...' : 'Select a board...'}</option>
+              {boardOptions.map((board) => <option key={board.id} value={String(board.id)}>{board.name}</option>)}
+            </select>
+            {sendError && <p role="alert" className="text-sm text-rose-600">{sendError}</p>}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSendItem(null)} disabled={loading === sendItem?.id}>Cancel</Button>
+            <Button onClick={handleSendToMonday} disabled={boardsLoading || !selectedBoardId || loading === sendItem?.id}
+              className="bg-red-600 hover:bg-red-700 text-white">
+              {loading === sendItem?.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+              Send to Monday
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { format } from 'date-fns';
-import { Phone, Clock, ChevronDown, ChevronUp, Zap, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Phone, Clock, ChevronDown, ChevronUp, Zap, CheckCircle2 } from 'lucide-react';
 
 const statusConfig = {
   pending_review: { label: 'Pending Review', color: 'bg-amber-50 text-amber-700 border border-amber-200' },

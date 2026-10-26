@@ -11,6 +11,12 @@ function addDays(date: Date, days: number) {
   return next.toISOString().slice(0, 10);
 }
 
+function requireMutationId(result: any, field: string) {
+  const id = result?.[field]?.id;
+  if (!id) throw new Error(`Monday.com did not confirm the ${field} change.`);
+  return String(id);
+}
+
 Deno.serve(async (req) => {
   if (isOptions(req)) return preflightResponse();
   if (req.method !== 'POST') return jsonResponse({ error: 'Method not allowed' }, 405);
@@ -98,7 +104,7 @@ Deno.serve(async (req) => {
       if (!targetItemId) {
         const title = String(item_name || callLog.title || 'Call Follow-up').slice(0, 250);
         const created = await mondayGraphql(token, `mutation { create_item(board_id: ${board_id}, item_name: ${JSON.stringify(title)}, create_labels_if_missing: true) { id } }`);
-        targetItemId = created.create_item?.id;
+        targetItemId = requireMutationId(created, 'create_item');
         if (targetItemId) {
           const { error: saveError } = await auth.userClient.from('call_logs').update({
             monday_item_id: String(targetItemId), monday_board_id: String(board_id),
@@ -109,27 +115,27 @@ Deno.serve(async (req) => {
       if (!targetItemId || !/^\d+$/.test(String(targetItemId))) return jsonResponse({ error: 'Could not find or create Monday item' }, 400);
 
       if (status?.col_id && status?.value) {
-        await mondayGraphql(token, `mutation { change_simple_column_value(item_id: ${targetItemId}, board_id: ${board_id}, column_id: ${JSON.stringify(status.col_id)}, value: ${JSON.stringify(status.value)}, create_labels_if_missing: true) { id } }`);
+        requireMutationId(await mondayGraphql(token, `mutation { change_simple_column_value(item_id: ${targetItemId}, board_id: ${board_id}, column_id: ${JSON.stringify(status.col_id)}, value: ${JSON.stringify(status.value)}, create_labels_if_missing: true) { id } }`), 'change_simple_column_value');
       }
       if (priority?.col_id && priority?.value) {
-        await mondayGraphql(token, `mutation { change_simple_column_value(item_id: ${targetItemId}, board_id: ${board_id}, column_id: ${JSON.stringify(priority.col_id)}, value: ${JSON.stringify(priority.value)}, create_labels_if_missing: true) { id } }`);
+        requireMutationId(await mondayGraphql(token, `mutation { change_simple_column_value(item_id: ${targetItemId}, board_id: ${board_id}, column_id: ${JSON.stringify(priority.col_id)}, value: ${JSON.stringify(priority.value)}, create_labels_if_missing: true) { id } }`), 'change_simple_column_value');
       }
       if (timeline?.col_id && timeline?.from) {
         const value = timeline.type === 'date'
           ? JSON.stringify({ date: timeline.from })
           : JSON.stringify({ from: timeline.from, to: timeline.to || timeline.from });
-        await mondayGraphql(token, `mutation { change_column_value(item_id: ${targetItemId}, board_id: ${board_id}, column_id: ${JSON.stringify(timeline.col_id)}, value: ${JSON.stringify(value)}) { id } }`);
+        requireMutationId(await mondayGraphql(token, `mutation { change_column_value(item_id: ${targetItemId}, board_id: ${board_id}, column_id: ${JSON.stringify(timeline.col_id)}, value: ${JSON.stringify(value)}) { id } }`), 'change_column_value');
       }
       if (assignee?.col_id && assignee?.user_id && /^\d+$/.test(String(assignee.user_id))) {
         const peopleValue = JSON.stringify({ personsAndTeams: [{ id: Number(assignee.user_id), kind: 'person' }] });
-        await mondayGraphql(token, `mutation { change_column_value(item_id: ${targetItemId}, board_id: ${board_id}, column_id: ${JSON.stringify(assignee.col_id)}, value: ${JSON.stringify(peopleValue)}) { id } }`);
+        requireMutationId(await mondayGraphql(token, `mutation { change_column_value(item_id: ${targetItemId}, board_id: ${board_id}, column_id: ${JSON.stringify(assignee.col_id)}, value: ${JSON.stringify(peopleValue)}) { id } }`), 'change_column_value');
       }
 
       const note = [`Call: ${callLog.title || 'Call'}`, callLog.call_date ? `Date: ${callLog.call_date}` : '', callLog.summary || callLog.notes || '',
         ...(callLog.risk_flags || []).map((risk: any) => `Risk (${risk.severity}): ${risk.keyword} — ${risk.context}`),
         ...(callLog.action_items || []).map((item: any) => `Follow-up: ${item.action}`),
       ].filter(Boolean).join('\n\n');
-      await mondayGraphql(token, `mutation { create_update(item_id: ${targetItemId}, body: ${JSON.stringify(note)}) { id } }`);
+      requireMutationId(await mondayGraphql(token, `mutation { create_update(item_id: ${targetItemId}, body: ${JSON.stringify(note)}) { id } }`), 'create_update');
       const { account } = await mondayGraphql(token, '{ account { slug } }').catch(() => ({ account: null }));
       const accountSlug = account?.slug || '';
       const { error: updateError } = await auth.userClient.from('call_logs').update({

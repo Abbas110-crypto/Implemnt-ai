@@ -202,7 +202,7 @@ export default function CalendarBots() {
   const { data: calendars = [], isLoading } = useQuery({
     queryKey: ['recall-calendars', currentUser?.id],
     queryFn: () => currentUser
-      ? appClient.entities.RecallCalendar.filter({ tenant_id: currentUser.id }, '-created_date')
+      ? appClient.entities.RecallCalendar.filter({ tenant_id: currentUser.id, status: ['connected', 'connecting', 'error'] }, '-created_date')
       : [],
     enabled: !!currentUser,
     refetchInterval: query => query.state.data?.some(calendar => calendar.status === 'connecting') ? 10000 : false,

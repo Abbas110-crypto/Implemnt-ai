@@ -1,8 +1,7 @@
-import React, { useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Zap, Bot, AlertTriangle, BarChart3, CheckCircle2, ArrowRight, Calendar, Users, TrendingUp } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { supabase } from '@/lib/supabaseClient';
+import { useAuth } from '@/lib/AuthContext';
 
 const features = [
   {
@@ -51,16 +50,10 @@ const stats = [
 
 export default function Landing() {
   const navigate = useNavigate();
-
-  React.useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      const authed = Boolean(session);
-      if (authed) navigate('/dashboard');
-    });
-  }, [navigate]);
+  const { isAuthenticated } = useAuth();
 
   const handleSignUp = () => {
-    navigate('/login');
+    navigate(isAuthenticated ? '/dashboard' : '/login');
   };
 
   return (
@@ -75,9 +68,9 @@ export default function Landing() {
             <span className="font-bold text-slate-900 text-lg tracking-tight">Implemnt</span>
           </div>
           <div className="flex items-center gap-3">
-            <Button variant="ghost" size="sm" onClick={handleSignUp}>Sign in</Button>
+            <Button variant="ghost" size="sm" onClick={handleSignUp}>{isAuthenticated ? 'Dashboard' : 'Sign in'}</Button>
             <Button size="sm" className="bg-indigo-600 hover:bg-indigo-700 text-white" onClick={handleSignUp}>
-              Get started free
+              {isAuthenticated ? 'Open workspace' : 'Get started free'}
             </Button>
           </div>
         </div>
@@ -103,7 +96,7 @@ export default function Landing() {
               className="bg-indigo-600 hover:bg-indigo-700 text-white gap-2 px-8 h-12 text-base"
               onClick={handleSignUp}
             >
-              Start for free <ArrowRight className="w-4 h-4" />
+              {isAuthenticated ? 'Open workspace' : 'Start for free'} <ArrowRight className="w-4 h-4" />
             </Button>
             <Button variant="outline" size="lg" className="h-12 text-base px-8" onClick={handleSignUp}>
               See a demo
@@ -190,7 +183,7 @@ export default function Landing() {
               className="bg-white text-indigo-700 hover:bg-indigo-50 gap-2 px-8 h-12 text-base font-semibold"
               onClick={handleSignUp}
             >
-              Get started free <ArrowRight className="w-4 h-4" />
+              {isAuthenticated ? 'Open workspace' : 'Get started free'} <ArrowRight className="w-4 h-4" />
             </Button>
             <p className="mt-4 text-xs text-indigo-300 flex items-center justify-center gap-1.5">
               <CheckCircle2 className="w-3.5 h-3.5" /> No credit card required

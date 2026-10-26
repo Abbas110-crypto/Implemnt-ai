@@ -71,7 +71,10 @@ Deno.serve(async (req) => {
       }, { onConflict: 'tenant_id,recall_calendar_id' });
       if (error) throw error;
       if (existing && existing.recall_calendar_id !== calendar.id) {
-        const { error: staleError } = await admin.from('recall_calendars').delete()
+        // Preserve old event-to-bot mappings for transcripts that arrive after
+        // the provider replaced this calendar connection.
+        const { error: staleError } = await admin.from('recall_calendars')
+          .update({ status: 'disconnected' })
           .eq('id', existing.id).eq('tenant_id', user.id);
         if (staleError) throw staleError;
       }
@@ -83,8 +86,10 @@ Deno.serve(async (req) => {
       if (error) throw error;
       const response = await fetch(`${recallBase}/calendars/${calendar.recall_calendar_id}/`, { method: 'DELETE', headers: { Authorization: `Token ${apiKey}` } });
       if (!response.ok && response.status !== 404) throw new Error('Recall could not disconnect this calendar.');
-      const { error: deleteError } = await admin.from('recall_calendars').delete().eq('id', calendar.id).eq('tenant_id', user.id);
-      if (deleteError) throw deleteError;
+      const { error: disconnectError } = await admin.from('recall_calendars')
+        .update({ status: 'disconnected', sync_error: null })
+        .eq('id', calendar.id).eq('tenant_id', user.id);
+      if (disconnectError) throw disconnectError;
       return jsonResponse({ success: true });
     }
     if (body.action === 'update_settings') {

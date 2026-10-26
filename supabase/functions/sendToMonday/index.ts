@@ -7,18 +7,20 @@ Deno.serve(async (req) => {
   const auth = await requireUser(req);
   if ('error' in auth) return auth.error;
   try {
-    const { action_item_id, board_id, group_id } = await req.json();
+    const { action, action_item_id, board_id, group_id } = await req.json();
+    if (action === 'get_boards') {
+      const token = await getMondayAccessToken(auth.user.id);
+      const { boards = [] } = await mondayGraphql(token, '{ boards(limit: 50) { id name } }');
+      return jsonResponse({ boards });
+    }
     if (!action_item_id) return jsonResponse({ error: 'action_item_id required' }, 400);
     const { data: actionItem, error: itemError } = await auth.userClient.from('action_items')
       .select('*').eq('id', action_item_id).single();
     if (itemError || !actionItem) return jsonResponse({ error: 'Action item not found' }, 404);
+    if (actionItem.status !== 'approved') return jsonResponse({ error: 'Approve this action item before sending it to Monday.com.' }, 400);
     const token = await getMondayAccessToken(auth.user.id);
-    let targetBoardId = board_id || actionItem.monday_board_id;
-    if (!targetBoardId) {
-      const { boards = [] } = await mondayGraphql(token, '{ boards(limit: 10) { id name } }');
-      if (!boards.length) return jsonResponse({ error: 'No boards found in Monday.com' }, 400);
-      targetBoardId = boards[0].id;
-    }
+    const targetBoardId = board_id || actionItem.monday_board_id;
+    if (!targetBoardId) return jsonResponse({ error: 'Choose a Monday board before sending this action item.' }, 400);
     if (!/^\d+$/.test(String(targetBoardId))) return jsonResponse({ error: 'Invalid board ID' }, 400);
 
     let mondayItemId = String(actionItem.monday_board_id) === String(targetBoardId) ? actionItem.monday_item_id : null;

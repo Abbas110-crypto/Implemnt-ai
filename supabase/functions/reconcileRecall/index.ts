@@ -42,6 +42,33 @@ Deno.serve(async (req) => {
         results.push({ calendar_id: calendar.id, error: message });
       }
     }
+    // A disconnected calendar must not schedule new bots, but its existing
+    // event mappings are still needed when a transcript is delivered late.
+    const { data: pendingEvents, error: pendingError } = await admin.from('recall_calendar_events')
+      .select('calendar_id,recall_calendars!inner(status)')
+      .eq('recall_calendars.status', 'disconnected')
+      .not('recall_bot_id', 'is', null).is('transcript_synced_at', null)
+      .gte('start_time', new Date(Date.now() - 28 * 24 * 60 * 60 * 1000).toISOString())
+      .lte('start_time', new Date().toISOString())
+      .order('transcript_checked_at', { ascending: true, nullsFirst: true }).limit(10);
+    if (pendingError) throw pendingError;
+    for (const calendarId of new Set((pendingEvents || []).map((event: any) => event.calendar_id))) {
+      const { data: calendar, error: calendarError } = await admin.from('recall_calendars')
+        .select('*').eq('id', calendarId).single();
+      if (calendarError) throw calendarError;
+      try {
+        const result = await reconcileCalendar(admin, calendar);
+        const { error: updateError } = await admin.from('recall_calendars')
+          .update({ last_checked: new Date().toISOString(), sync_error: null }).eq('id', calendar.id);
+        if (updateError) throw updateError;
+        results.push({ calendar_id: calendar.id, scheduled: 0, transcripts: result.transcripts });
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : 'Transcript recovery failed';
+        await admin.from('recall_calendars')
+          .update({ last_checked: new Date().toISOString(), sync_error: message.slice(0, 500) }).eq('id', calendar.id);
+        results.push({ calendar_id: calendar.id, error: message });
+      }
+    }
     return jsonResponse({ processed: results.length, failures: results.filter((item) => item.error).length, results });
   } catch (error) {
     console.error('Recall reconciliation failed:', error);

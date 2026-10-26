@@ -13,7 +13,7 @@ export async function recallRequest(pathOrUrl: string, init: RequestInit = {}) {
       headers: { Authorization: `Token ${apiKey}`, ...(init.body ? { 'Content-Type': 'application/json' } : {}), ...init.headers },
     });
     if (response.ok) return response.status === 204 ? null : response.json();
-    if (attempt < 2 && [429, 500, 502, 503, 504].includes(response.status)) {
+    if (attempt < 2 && [409, 429, 500, 502, 503, 504, 507].includes(response.status)) {
       const retryAfter = Number(response.headers.get('Retry-After'));
       await new Promise((resolve) => setTimeout(resolve, Number.isFinite(retryAfter) && retryAfter > 0
         ? Math.min(retryAfter * 1000, 5000) : 500 * 2 ** attempt));
@@ -85,25 +85,59 @@ export async function syncBotTranscript(admin: any, botId: string, transcriptId:
   if (!tracked?.length) return 0;
   const transcript = await fetchTranscript(transcriptId);
   for (const tenantId of new Set(tracked.map((row: any) => row.tenant_id))) {
-    await saveCall(admin, String(tenantId), botId, {
-      notes: transcript.text || null,
-      transcript_url: transcript.url,
-      recall_transcript_id: transcriptId,
-      ...(recordingId ? { recall_recording_id: recordingId } : {}),
-      recall_status: transcript.text ? 'done' : 'transcript_empty',
-      recall_error: transcript.text ? null : 'Recall returned an empty transcript.',
-    });
+    if (transcript.text) {
+      const { error: segmentError } = await admin.from('recall_transcript_segments').upsert({
+        tenant_id: tenantId, recall_bot_id: botId, recall_transcript_id: transcriptId,
+        recall_recording_id: recordingId || null, transcript_text: transcript.text, transcript_url: transcript.url,
+      }, { onConflict: 'tenant_id,recall_transcript_id' });
+      if (segmentError) throw segmentError;
+      const { data: segments, error: listError } = await admin.from('recall_transcript_segments')
+        .select('transcript_text').eq('tenant_id', tenantId).eq('recall_bot_id', botId)
+        .order('created_date', { ascending: true });
+      if (listError) throw listError;
+      await saveCall(admin, String(tenantId), botId, {
+        notes: (segments || []).map((segment: any) => segment.transcript_text).filter(Boolean).join('\n\n'),
+        transcript_url: transcript.url, recall_transcript_id: transcriptId,
+        ...(recordingId ? { recall_recording_id: recordingId } : {}),
+        recall_status: 'done', recall_error: null,
+      });
+    } else {
+      await saveCall(admin, String(tenantId), botId, {
+        recall_status: 'transcript_empty', recall_error: 'Recall returned an empty transcript.',
+      });
+    }
   }
-  return new Set(tracked.map((row: any) => row.tenant_id)).size;
+  return transcript.text ? new Set(tracked.map((row: any) => row.tenant_id)).size : 0;
 }
 
-export async function reconcileBotTranscript(admin: any, botId: string) {
+export async function reconcileBotTranscript(admin: any, botId: string, terminal = false) {
   const bot = await recallRequest(`${apiV1}/bot/${encodeURIComponent(botId)}/`);
+  // A missed status webhook must not leave a fully recovered transcript pending forever.
+  const botFinished = terminal || (bot.status_changes || []).some((change: any) =>
+    change.code === 'done' || change.code === 'fatal');
+  let lastError: unknown = null;
+  let recovered = 0;
+  let complete = Array.isArray(bot.recordings) && bot.recordings.length > 0;
   for (const recording of bot.recordings || []) {
     const transcriptId = recording.media_shortcuts?.transcript?.id;
-    if (transcriptId) return syncBotTranscript(admin, botId, String(transcriptId), String(recording.id));
+    if (!transcriptId) { complete = false; continue; }
+    try {
+      const saved = await syncBotTranscript(admin, botId, String(transcriptId), String(recording.id));
+      recovered = Math.max(recovered, saved);
+      if (!saved) complete = false;
+    } catch (error) {
+      lastError = error;
+      complete = false;
+    }
   }
-  return 0;
+  if (lastError && !recovered) throw lastError;
+  if (complete && botFinished) {
+    const { error } = await admin.from('recall_calendar_events')
+      .update({ transcript_synced_at: new Date().toISOString(), bot_error: null })
+      .eq('recall_bot_id', botId);
+    if (error) throw error;
+  }
+  return { recovered, complete: complete && botFinished };
 }
 
 function eventTitle(raw: unknown) {
@@ -113,6 +147,14 @@ function eventTitle(raw: unknown) {
   } catch {
     return 'Calendar meeting';
   }
+}
+
+export function scheduledBotId(event: any) {
+  const start = new Date(event.start_time).getTime();
+  const matching = (event.bots || []).filter((bot: any) =>
+    bot.bot_id && new Date(bot.start_time).getTime() === start);
+  return String((matching.find((bot: any) => bot.meeting_url === event.meeting_url)
+    || matching[0])?.bot_id || '');
 }
 
 export async function syncCalendarEvents(admin: any, calendar: any, filters: Record<string, string>) {
@@ -133,7 +175,7 @@ export async function syncCalendarEvents(admin: any, calendar: any, filters: Rec
         source_updated_at: event.updated_at || null,
       };
       const { data: previous, error: previousError } = await admin.from('recall_calendar_events')
-        .select('id,recall_bot_id,bot_status,source_updated_at').eq('tenant_id', calendar.tenant_id)
+        .select('id,recall_bot_id,bot_status,source_updated_at,start_time').eq('tenant_id', calendar.tenant_id)
         .eq('recall_calendar_id', calendar.recall_calendar_id).eq('recall_event_id', eventId).maybeSingle();
       if (previousError) throw previousError;
       const { data: stored, error: storeError } = await admin.from('recall_calendar_events')
@@ -169,17 +211,24 @@ export async function syncCalendarEvents(admin: any, calendar: any, filters: Rec
             },
           }),
         });
-        const botId = scheduledEvent.bots?.[0]?.bot_id || null;
+        // Recall can return old and new bots for a moved recurring event, in no
+        // guaranteed order. Track the bot that matches this occurrence.
+        const botId = scheduledBotId(scheduledEvent);
         if (!botId) throw new Error('Recall did not return a bot ID');
+        const newOccurrence = String(previous?.recall_bot_id || '') !== String(botId)
+          || new Date(previous?.start_time || 0).getTime() !== new Date(event.start_time || 0).getTime();
         const { error } = await admin.from('recall_calendar_events').update({
           recall_bot_id: String(botId), bot_status: 'scheduled', bot_error: null,
+          ...(newOccurrence ? { transcript_synced_at: null, transcript_checked_at: null } : {}),
           last_processed: new Date().toISOString(),
         }).eq('id', stored.id);
         if (error) throw error;
         scheduled++;
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Bot scheduling failed';
-        await admin.from('recall_calendar_events').update({ bot_status: 'schedule_error', bot_error: message.slice(0, 500) }).eq('id', stored.id);
+        const { error: saveError } = await admin.from('recall_calendar_events')
+          .update({ bot_status: 'schedule_error', bot_error: message.slice(0, 500) }).eq('id', stored.id);
+        if (saveError) throw saveError;
         failures.push(`${eventId}: ${message}`);
       }
     }
@@ -192,12 +241,16 @@ export async function syncCalendarEvents(admin: any, calendar: any, filters: Rec
 
 export async function reconcileCalendar(admin: any, calendar: any) {
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  const sync = await syncCalendarEvents(admin, calendar, { start_time__gte: since });
+  const sync = calendar.status === 'disconnected'
+    ? { pages: 0, scheduled: 0 }
+    : await syncCalendarEvents(admin, calendar, { start_time__gte: since });
   const { data: events, error } = await admin.from('recall_calendar_events')
-    .select('recall_bot_id,start_time').eq('tenant_id', calendar.tenant_id)
+    .select('recall_bot_id,start_time,bot_status').eq('tenant_id', calendar.tenant_id)
     .eq('calendar_id', calendar.id).not('recall_bot_id', 'is', null)
-    .gte('start_time', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())
-    .lte('start_time', new Date().toISOString()).order('start_time', { ascending: false }).limit(100);
+    .is('transcript_synced_at', null)
+    .gte('start_time', new Date(Date.now() - 28 * 24 * 60 * 60 * 1000).toISOString())
+    .lte('start_time', new Date().toISOString())
+    .order('transcript_checked_at', { ascending: true, nullsFirst: true }).limit(10);
   if (error) throw error;
   let transcripts = 0;
   const seen = new Set<string>();
@@ -205,24 +258,31 @@ export async function reconcileCalendar(admin: any, calendar: any) {
     const botId = String(event.recall_bot_id);
     if (seen.has(botId)) continue;
     seen.add(botId);
-    const { data: call, error: callError } = await admin.from('call_logs')
-      .select('notes,recall_status').eq('tenant_id', calendar.tenant_id)
-      .eq('recall_bot_id', botId).maybeSingle();
-    if (callError) throw callError;
-    if (call?.notes || call?.recall_status === 'transcript_empty') continue;
     try {
-      const recovered = await reconcileBotTranscript(admin, botId);
-      transcripts += recovered;
-      if (!recovered && new Date(event.start_time).getTime() < Date.now() - 60 * 60 * 1000) {
+      const result = await reconcileBotTranscript(admin, botId, ['done', 'fatal'].includes(event.bot_status));
+      transcripts += result.recovered;
+      if (!result.complete && new Date(event.start_time).getTime() < Date.now() - 60 * 60 * 1000) {
         await saveBotStatus(admin, botId, 'transcript_pending', 'Transcript has not arrived. Retrying automatically.');
+        const { error: pendingError } = await admin.from('recall_calendar_events')
+          .update({ bot_error: 'Transcript incomplete. Retrying automatically.' })
+          .eq('tenant_id', calendar.tenant_id).eq('recall_bot_id', botId);
+        if (pendingError) throw pendingError;
       }
     }
     catch (error) {
       console.warn(`Recall transcript still unavailable for bot ${botId}:`, error);
       if (new Date(event.start_time).getTime() < Date.now() - 60 * 60 * 1000) {
         await saveBotStatus(admin, botId, 'transcript_pending', 'Transcript retrieval failed. Retrying automatically.');
+        const { error: pendingError } = await admin.from('recall_calendar_events')
+          .update({ bot_error: 'Transcript retrieval failed. Retrying automatically.' })
+          .eq('tenant_id', calendar.tenant_id).eq('recall_bot_id', botId);
+        if (pendingError) throw pendingError;
       }
     }
+    const { error: checkedError } = await admin.from('recall_calendar_events')
+      .update({ transcript_checked_at: new Date().toISOString() })
+      .eq('tenant_id', calendar.tenant_id).eq('recall_bot_id', botId);
+    if (checkedError) throw checkedError;
   }
   return { ...sync, transcripts };
 }

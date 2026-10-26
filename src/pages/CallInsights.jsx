@@ -15,25 +15,6 @@ const SENTIMENT_CONFIG = {
   negative:  { color: 'text-red-600',     bg: 'bg-red-50 border-red-200',         icon: TrendingDown, label: 'Negative' },
 };
 
-const PRIORITY_COLORS = {
-  high:   'bg-red-100 text-red-700 border-red-200',
-  medium: 'bg-amber-100 text-amber-700 border-amber-200',
-  low:    'bg-emerald-100 text-emerald-700 border-emerald-200',
-};
-
-function SentimentBar({ score }) {
-  const pct = Math.round(((score + 1) / 2) * 100);
-  const color = score >= 0.3 ? 'bg-emerald-400' : score >= -0.2 ? 'bg-amber-400' : 'bg-red-400';
-  return (
-    <div className="flex items-center gap-2">
-      <div className="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden">
-        <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%` }} />
-      </div>
-      <span className="text-xs text-slate-500 w-8 text-right">{score > 0 ? '+' : ''}{score.toFixed(2)}</span>
-    </div>
-  );
-}
-
 function CallInsightCard({ call, clients, onAnalyze, analyzing, onSendToMonday }) {
   const [expanded, setExpanded] = useState(false);
   const client = clients.find(c => c.id === call.client_id);
@@ -184,21 +165,24 @@ export default function CallInsights() {
 
   const handleAnalyze = async (id) => {
     setAnalyzing(id);
-    const res = await appClient.functions.invoke('analyzeCallTranscript', { call_log_id: id });
-    if (res.data?.ok) {
-      toast.success('Analysis complete');
+    try {
+      const res = await appClient.functions.invoke('analyzeCallTranscript', { call_log_id: id });
+      if (res.error || !res.data?.ok) throw new Error(res.data?.error || res.error?.message || 'Analysis failed');
+      if (res.data.action_item_warning) toast.warning(res.data.action_item_warning);
+      else toast.success('Analysis complete');
       queryClient.invalidateQueries({ queryKey: ['call-logs-insights'] });
-    } else {
-      toast.error(res.data?.error || 'Analysis failed');
+    } catch (error) {
+      toast.error(error.message || 'Analysis failed');
+    } finally {
+      setAnalyzing(null);
     }
-    setAnalyzing(null);
   };
 
   const handleSendToMonday = (call) => setMondayCall(call);
 
   const filteredCalls = calls.filter(c => {
     if (filter === 'all') return true;
-    if (filter === 'unanalyzed') return !c.summary && c.notes;
+    if (filter === 'unanalyzed') return !c.summary && (c.notes || c.transcript_url);
     if (filter === 'high_risk') return c.risk_flags?.some(f => f.severity === 'high');
     return c.sentiment === filter;
   });
